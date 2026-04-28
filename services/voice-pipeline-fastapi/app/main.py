@@ -33,7 +33,11 @@ def _log_provider_status() -> None:
     """Log which providers are active (never log keys)."""
     stt = "real (Deepgram)" if (settings.stt_api_key or "").strip() else "mock"
     llm = "real (OpenAI)" if (settings.llm_api_key or "").strip() else "mock"
-    tts = "real (ElevenLabs)" if ((settings.tts_api_key or "").strip() and (settings.tts_voice_id or "").strip()) else "mock"
+    tts_provider = (settings.tts_provider or "").strip().lower()
+    if tts_provider == "openai":
+        tts = "real (OpenAI)" if (settings.tts_api_key or settings.llm_api_key or "").strip() else "mock"
+    else:
+        tts = "real (ElevenLabs)" if ((settings.tts_api_key or "").strip() and (settings.tts_voice_id or "").strip()) else "mock"
     logger.info("Pipeline providers: STT=%s, LLM=%s, TTS=%s", stt, llm, tts)
 
 

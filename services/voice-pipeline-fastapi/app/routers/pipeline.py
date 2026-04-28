@@ -37,9 +37,15 @@ def _get_llm_client() -> LLMClient:
 
 
 def _get_tts_client() -> TTSClient:
-    if (settings.tts_api_key or "").strip() and (settings.tts_voice_id or "").strip():
-        from app.services.elevenlabs_client import ElevenLabsTTSClient
-        return ElevenLabsTTSClient(timeout_seconds=settings.tts_timeout_ms / 1000.0 + 10)
+    provider = (settings.tts_provider or "").strip().lower()
+    if provider == "openai":
+        if (settings.tts_api_key or settings.llm_api_key or "").strip():
+            from app.services.openai_tts_client import OpenAITTSClient
+            return OpenAITTSClient(timeout_seconds=settings.tts_timeout_ms / 1000.0 + 20)
+    if provider == "elevenlabs":
+        if (settings.tts_api_key or "").strip() and (settings.tts_voice_id or "").strip():
+            from app.services.elevenlabs_client import ElevenLabsTTSClient
+            return ElevenLabsTTSClient(timeout_seconds=settings.tts_timeout_ms / 1000.0 + 10)
     return MockTTSClient(latency_ms=settings.tts_timeout_ms)
 
 
@@ -94,6 +100,17 @@ async def _play_greeting(state: PipelineState, websocket: WebSocket) -> None:
                 })
         elif tts_buffer:
             await websocket.send_bytes(bytes(tts_buffer))
+
+        # Always send the greeting text so browser clients can speak it even if
+        # TTS bytes are unavailable (or blocked by provider limits).
+        try:
+            await websocket.send_json({
+                "type": "pipeline.greeting",
+                "sessionId": state.session_id,
+                "fullResponse": full_response,
+            })
+        except Exception:
+            pass
         state.is_ai_speaking = False
         logger.info("Greeting played for stream %s", state.session_id)
     except Exception as e:
@@ -143,7 +160,7 @@ async def _run_pipeline(
 
         async for token in llm_client.generate_stream(
             transcript=transcript,
-            conversation_history=state.conversation_history,
+            conversation_history=state.conversation_history[:-1],
             system_prompt=system_prompt,
         ):
             if state.interrupted:
@@ -196,7 +213,13 @@ async def _run_pipeline(
         })
     except Exception as e:
         state.is_ai_speaking = False
-        logger.warning("Pipeline error for session %s: %s", state.session_id, type(e).__name__, exc_info=not settings.debug)
+        logger.warning(
+            "Pipeline error for session %s: %s (%s)",
+            state.session_id,
+            type(e).__name__,
+            str(e)[:300],
+            exc_info=settings.debug,
+        )
         try:
             await websocket.send_json({
                 "type": "pipeline.error",
@@ -336,19 +359,20 @@ async def test_call_stream(websocket: WebSocket) -> None:
                     payload_b64 = message.get("payload") or (message.get("media") or {}).get("payload")
                     if not payload_b64:
                         continue
+                    if state.is_ai_speaking:
+                        continue
                     try:
                         pcm_16k = base64.b64decode(payload_b64)
                     except Exception:
                         continue
-                    if state.is_ai_speaking:
-                        state.interrupted = True
-                        await asyncio.sleep(0.1)
                     from app.utils.twilio_audio import pcm_16k_to_mulaw_8k
                     mulaw_8k = pcm_16k_to_mulaw_8k(pcm_16k)
                     if not mulaw_8k:
                         continue
                     state._audio_buffer.extend(mulaw_8k)
-                    if len(state._audio_buffer) >= 3200:
+                    # Buffer longer for browser mic input to improve STT accuracy
+                    # and avoid excessive Deepgram calls.
+                    if len(state._audio_buffer) >= 16000:
                         to_process = bytes(state._audio_buffer)
                         state._audio_buffer.clear()
                         await _run_pipeline(state, to_process, websocket)

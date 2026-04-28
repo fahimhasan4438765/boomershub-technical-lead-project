@@ -14,6 +14,9 @@ The repository is organized as a polyglot monorepo with:
 ### Quick Start
 
 ```bash
+# Set env (safe defaults; add API keys if you want real providers)
+cp .env.example .env
+
 # Start the full stack (PostgreSQL + Redis + Call Session service)
 docker compose up
 
@@ -25,13 +28,16 @@ docker compose up
 
 ```bash
 # NestJS Call Session (requires PostgreSQL on localhost:5432)
+cp services/call-session-nest/.env.example services/call-session-nest/.env
 cd services/call-session-nest && npm install && npm run start:dev
 
 # FastAPI Voice Pipeline
+cp services/voice-pipeline-fastapi/.env.example services/voice-pipeline-fastapi/.env
 cd services/voice-pipeline-fastapi && pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8001
 
 # Next.js Console
+cp apps/console-next/.env.local.example apps/console-next/.env.local
 cd apps/console-next && npm install && npm run dev
 ```
 

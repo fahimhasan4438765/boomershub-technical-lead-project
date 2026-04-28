@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     tts_provider: str = "elevenlabs"
     tts_api_key: str = ""
     tts_voice_id: str = Field("", env="PIPELINE_TTS_VOICE_ID")
+    tts_voice: str = "alloy"
+    tts_model: str = "gpt-4o-mini-tts"
 
     stt_timeout_ms: int = 400
     llm_timeout_ms: int = 500
@@ -30,7 +32,9 @@ class Settings(BaseSettings):
 
     twilio_media_ws_url: str = Field("", env="TWILIO_MEDIA_WS_URL")
 
-    model_config = {"env_prefix": "PIPELINE_"}
+    # Load local dev values from service-level `.env` when present.
+    # Docker Compose also injects env vars, which take precedence.
+    model_config = {"env_prefix": "PIPELINE_", "env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()

@@ -16,6 +16,8 @@ export default function TestCallPage() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const speakingRef = useRef(false);
+  const receivedBinaryAudioRef = useRef(false);
 
   const stopCall = useCallback(() => {
     if (wsRef.current) {
@@ -39,6 +41,11 @@ export default function TestCallPage() {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    speakingRef.current = false;
+    receivedBinaryAudioRef.current = false;
     setStatus("idle");
     setTranscript("");
   }, []);
@@ -46,15 +53,23 @@ export default function TestCallPage() {
   const startCall = useCallback(async () => {
     setStatus("connecting");
     setTranscript("");
+    receivedBinaryAudioRef.current = false;
 
     const ws = new WebSocket(PIPELINE_WS);
+    ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
     ws.onopen = async () => {
       ws.send(JSON.stringify({ event: "start" }));
 
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         streamRef.current = stream;
 
         const sampleRate = 16000;
@@ -73,6 +88,7 @@ export default function TestCallPage() {
 
         processor.onaudioprocess = (e) => {
           if (ws.readyState !== WebSocket.OPEN) return;
+          if (speakingRef.current) return;
           const input = e.inputBuffer.getChannelData(0);
           const outLength = Math.floor(input.length / downsample);
           const out = new Int16Array(outLength);
@@ -102,20 +118,12 @@ export default function TestCallPage() {
       }
     };
 
-    ws.onmessage = (event) => {
-      if (typeof event.data === "string") {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.transcript) setTranscript((t) => t + " " + msg.transcript);
-          if (msg.fullResponse) setTranscript((t) => t + "\n→ " + msg.fullResponse);
-        } catch {}
-        return;
-      }
-      const data = event.data as ArrayBuffer;
-      if (!data.byteLength) return;
+    const playPcm16k = (data: ArrayBuffer) => {
       const ctx = audioContextRef.current;
       if (!ctx) return;
+      if (!data.byteLength) return;
       const numSamples = data.byteLength / 2;
+      if (numSamples <= 0) return;
       const buffer = ctx.createBuffer(1, numSamples, 16000);
       const channel = buffer.getChannelData(0);
       const view = new Int16Array(data);
@@ -125,7 +133,67 @@ export default function TestCallPage() {
       const src = ctx.createBufferSource();
       src.buffer = buffer;
       src.connect(ctx.destination);
+      speakingRef.current = true;
+      src.onended = () => {
+        speakingRef.current = false;
+      };
       src.start();
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.transcript) setTranscript((t) => t + " " + msg.transcript);
+          if (msg.fullResponse) {
+            setTranscript((t) => t + "\n→ " + msg.fullResponse);
+
+            // In mock mode the backend may not stream playable audio bytes.
+            // Use the browser's built-in speech synthesis so you can still
+            // "hear" the agent without external TTS keys.
+            if (
+              !receivedBinaryAudioRef.current &&
+              typeof window !== "undefined" &&
+              "speechSynthesis" in window
+            ) {
+              try {
+                window.speechSynthesis.cancel();
+                const u = new SpeechSynthesisUtterance(String(msg.fullResponse));
+                u.rate = 1;
+                u.pitch = 1;
+                u.volume = 1;
+                speakingRef.current = true;
+                u.onend = () => {
+                  speakingRef.current = false;
+                };
+                u.onerror = () => {
+                  speakingRef.current = false;
+                };
+                window.speechSynthesis.speak(u);
+              } catch {}
+            }
+          }
+        } catch {}
+        return;
+      }
+      if (event.data instanceof ArrayBuffer) {
+        receivedBinaryAudioRef.current = true;
+        if (typeof window !== "undefined" && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
+        playPcm16k(event.data);
+        return;
+      }
+      if (typeof Blob !== "undefined" && event.data instanceof Blob) {
+        receivedBinaryAudioRef.current = true;
+        if (typeof window !== "undefined" && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
+        void event.data
+          .arrayBuffer()
+          .then(playPcm16k)
+          .catch(() => {});
+      }
     };
 
     ws.onerror = () => setStatus("error");
